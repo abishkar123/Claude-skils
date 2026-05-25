@@ -1,0 +1,7 @@
+interface:
+  display_name: "Productivity Coach"
+  short_description: "Plan work, habits, skills, and reviews"
+  default_prompt: "Use $productivity-coach to turn my week, day, skill growth, or review into a realistic action plan."
+
+policy:
+  allow_implicit_invocation: true
