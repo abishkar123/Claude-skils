@@ -64,6 +64,29 @@ the blog post again, gym streak broke in week 3."
 python cli.py "Which connectors would help my productivity system?"
 ```
 
+### Web UI (React + FastAPI)
+
+```bash
+pip install -r requirements.txt
+export ANTHROPIC_API_KEY=sk-ant-...
+
+# terminal 1 — backend
+uvicorn server:app --port 8000
+
+# terminal 2 — frontend (dev)
+cd ui && npm install && npm run dev    # open http://localhost:5173
+```
+
+For a single-process deployment, build the UI once (`cd ui && npm run build`)
+and the FastAPI server serves it at `http://localhost:8000/`.
+
+The UI gives you: a chat with full history, agent answers rendered as
+per-section plan cards (Objective, Capacity Check, Risks, State…), an intent
+chip showing how the Orchestrator routed each request, connector permission
+toggles with risk badges (session-only grants, exactly mirroring the
+permission ledger), a deep-QA toggle, and live status (model, API key,
+storage mode).
+
 As a library (e.g. to wire in real MCP calls):
 
 ```python
@@ -79,6 +102,11 @@ print(orch.handle("Plan tomorrow around my meetings"))
 
 ```
 cli.py                              CLI entry point
+server.py                           FastAPI backend for the web UI
+ui/                                 React front end (Vite)
+  src/App.jsx                       layout, chat state, sidebar
+  src/components.jsx                plan cards, message + connector panel
+  src/api.js                        API client + output-frame section parser
 productivity_coach/
   config.py                         model + capacity + storage settings
   privacy.py                        query sanitizer, permission ledger
