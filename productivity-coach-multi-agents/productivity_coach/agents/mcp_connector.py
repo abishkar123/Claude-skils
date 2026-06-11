@@ -12,6 +12,7 @@ a `fetch` callable. Without one, every workflow falls back to manual mode.
 from dataclasses import dataclass, field
 from typing import Callable, Optional
 
+from ..circuit_breaker import BreakerRegistry
 from ..privacy import PermissionLedger
 from ..templates import connector_usage_note
 
@@ -87,6 +88,7 @@ class MCPConnectorAgent:
     def __init__(self, ledger: Optional[PermissionLedger] = None):
         self.ledger = ledger or PermissionLedger()
         self.registry: dict[str, Connector] = {}
+        self._breakers = BreakerRegistry()
 
     # -- discovery & authorization -------------------------------------
     def register(self, name: str, fetch: Callable[[str], str]) -> None:
@@ -110,13 +112,30 @@ class MCPConnectorAgent:
             return False, "not necessary — user input suffices"
         if not self.ledger.is_authorized(name):
             return False, "not authorized by the user this session"
+        if self._breakers.get(name).is_open:
+            return False, f"circuit open for '{name}' — connector unavailable, using manual fallback"
         return True, "ok"
+
+    def breaker_states(self) -> dict[str, str]:
+        return self._breakers.states()
 
     # -- use a connector ------------------------------------------------
     def fetch(self, name: str, request: str) -> tuple[str, str]:
-        """Call the connector and return (data, connector_usage_note)."""
+        """Call the connector and return (data, connector_usage_note).
+
+        Wraps the actual call in the circuit breaker. On failure the circuit
+        records the error and returns a manual-fallback note instead of raising.
+        """
         spec = self.registry[name]
-        data = spec.fetch(request)
+        breaker = self._breakers.get(name)
+        data, error = breaker.call(spec.fetch, request)
+        if error:
+            fallback_note = (
+                f"\n--- Connector Usage Note ---\n"
+                f"Connector '{name}' was unavailable ({error}). "
+                f"Manual fallback: {spec.manual_fallback}\n"
+            )
+            return "", fallback_note
         note = connector_usage_note(
             services=f"{spec.name} ({spec.scope})",
             purpose=request,

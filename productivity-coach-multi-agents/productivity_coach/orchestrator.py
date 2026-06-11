@@ -7,6 +7,7 @@ run as a Review -> Planning pipeline.
 """
 
 import re
+import time
 
 from . import prompts
 from .agents.base import BaseAgent
@@ -20,6 +21,7 @@ from .agents.workers import (
     ReviewAgent,
     SkillBuildingAgent,
 )
+from .snapshot import SnapshotLog, _sha8, session_log
 
 # Cheap keyword routing first; the model classifier is the fallback.
 _KEYWORD_ROUTES = [
@@ -130,8 +132,14 @@ class Orchestrator:
 
     def _run_agent(self, intent: str, request: str, deep_qa: bool) -> str:
         agent = self.agents[intent]
+        run_id = _sha8(f"{time.time()}{request}")
+        request_hash = _sha8(request)
 
         mcp_context, mcp_notes = self._gather_mcp_context(intent, request)
+        used_connectors = tuple(
+            name for name in _CONNECTOR_CANDIDATES.get(intent, ())
+            if mcp_notes and name in mcp_notes
+        )
         memory_context = ""
         collection = _MEMORY_COLLECTION.get(intent)
         if collection:
@@ -142,22 +150,56 @@ class Orchestrator:
         if mcp_notes:
             output += "\n" + mcp_notes
 
-        # QA gate with one repair round.
+        # QA gate with one repair round (saga step 1 → step 2).
         result = self.qa.gate(output, mcp_used=bool(mcp_notes), deep=deep_qa)
+        qa_first = result.passed
+        repair_attempted = False
+        compensated = False
+
         if not result.passed:
-            output = agent.run(
+            repair_attempted = True
+            repaired = agent.run(
                 request,
                 context + "\n\nYour previous draft failed QA for these reasons; "
                 "fix them and follow the required output frame exactly:\n"
                 + result.report() + "\n\nPrevious draft:\n" + output,
             )
             if mcp_notes:
-                output += "\n" + mcp_notes
+                repaired += "\n" + mcp_notes
+            result2 = self.qa.gate(repaired, mcp_used=bool(mcp_notes), deep=deep_qa)
+
+            if result2.passed:
+                output = repaired
+            else:
+                # Saga compensation: both attempts failed — return a graceful
+                # degraded response rather than a broken output. The original
+                # draft is preserved in the snapshot for debugging.
+                compensated = True
+                output = (
+                    "I wasn't able to produce a fully structured plan that met "
+                    "all quality checks for your request. Here is my best-effort "
+                    "response — please verify capacity percentages and section "
+                    "completeness manually.\n\n" + output
+                )
+
+        # Immutable snapshot — append-only, never mutated after creation.
+        session_log.record(
+            run_id=run_id,
+            timestamp=time.time(),
+            intent=intent,
+            request_hash=request_hash,
+            mcp_connectors=used_connectors,
+            qa_passed_first=qa_first,
+            repair_attempted=repair_attempted,
+            qa_passed_final=not compensated,
+            compensated=compensated,
+            output_hash=_sha8(output),
+        )
 
         # Offer storage only when a database is approved and available.
         if collection and self.memory.enabled:
             self.memory.save(collection, {"intent": intent, "request": request,
-                                          "output": output})
+                                          "output": output, "run_id": run_id})
             output += "\n[Stored in approved database: collection "
             output += f"'{collection}'. Say 'delete it' to remove.]"
         return output

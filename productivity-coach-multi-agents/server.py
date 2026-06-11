@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 from productivity_coach import Orchestrator, settings
 from productivity_coach.agents.mcp_connector import DEFAULT_CONNECTORS
+from productivity_coach.snapshot import session_log
 
 app = FastAPI(title="productivity-coach Multi Agents")
 app.add_middleware(
@@ -79,7 +80,25 @@ def status():
         "storage_enabled": settings.storage_enabled,
         "storage_connected": orchestrator.memory.enabled,
         "api_key_present": bool(os.environ.get("ANTHROPIC_API_KEY")),
+        "circuit_breakers": orchestrator.connectors.breaker_states(),
     }
+
+
+@app.get("/api/runs")
+def runs():
+    """Immutable session run log — append-only snapshots of every agent call."""
+    return [
+        {
+            "run_id": s.run_id,
+            "intent": s.intent,
+            "mcp_connectors": list(s.mcp_connectors),
+            "qa_passed_first": s.qa_passed_first,
+            "repair_attempted": s.repair_attempted,
+            "qa_passed_final": s.qa_passed_final,
+            "compensated": s.compensated,
+        }
+        for s in session_log.latest(50)
+    ]
 
 
 @app.post("/api/ask")
