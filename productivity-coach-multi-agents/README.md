@@ -98,6 +98,63 @@ The system is complete only if it can produce all of the following (verified by 
 - [x] Example outputs — [examples/](examples/)
 - [x] Quality checks for unrealistic or overloaded plans — [quality/qa-checklists.md](quality/qa-checklists.md)
 
+## Implementation (Python · OpenAI + Groq · FastAPI)
+
+The system is implemented in code under `src/productivity_coach/`. The markdown
+files in this repo are the agents' system prompts — the code loads them at
+runtime, so editing an agent's `.md` file changes its behavior.
+
+**Model split:**
+
+| Role | Provider | Default model | Why |
+|---|---|---|---|
+| Specialist agents (planning, skills, growth, review, search) | **OpenAI (paid)** | `gpt-4o` | Output quality matters — these write the plans |
+| Router (intent classification) + QA gate | **Groq (free)** | `llama-3.3-70b-versatile` | High-volume, cheap, fast; free tier |
+
+Both are configurable in `.env` (`OPENAI_MODEL`, `GROQ_MODEL`,
+`ROUTER_PROVIDER`, `SPECIALIST_PROVIDER`, `QA_PROVIDER`). If one key is
+missing, roles fall back to the other provider.
+
+**Pipeline per message:** route (Groq) → specialist(s) (OpenAI) → QA gate
+(Groq, approve/annotate/bounce with one revision max) → assembled reply.
+
+**Privacy & storage in code, not just prompts:**
+- `privacy.py` — per-session taint registry; search requests containing
+  registered private terms or email addresses are blocked and logged.
+- `memory/store.py` — MongoDB when `MONGODB_URI` is set; otherwise the
+  ledger fallback (nothing persisted, copy-pasteable blocks returned).
+  Writes require session-level approval **and** `user_approved=true`.
+
+### Run it
+
+```bash
+cd productivity-coach-multi-agents
+pip install -e .            # add ".[mongo]" for MongoDB support
+cp .env.example .env        # set OPENAI_API_KEY and GROQ_API_KEY
+uvicorn productivity_coach.api.main:app --reload
+```
+
+### API
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /health` | Models, keys, storage backend |
+| `POST /sessions` | New chat session |
+| `POST /sessions/{id}/messages` | Chat turn → routed, QA-gated reply |
+| `POST /sessions/{id}/privacy/taint` | Register private terms to block from searches |
+| `POST /sessions/{id}/storage/approve` | Approve storage for the session |
+| `POST /sessions/{id}/records` | Save an approved record (Mongo or ledger block) |
+| `GET /records/{collection}` · `DELETE /records/{collection}` | List / delete records |
+
+Interactive docs at `http://localhost:8000/docs`.
+
+```bash
+SID=$(curl -s -X POST localhost:8000/sessions | jq -r .session_id)
+curl -s -X POST localhost:8000/sessions/$SID/messages \
+  -H 'content-type: application/json' \
+  -d '{"message":"Plan my week. Meetings Mon 10-12, Wed 1-5. Priorities: ship API migration, gym 3x. ~6 focused hours/day."}' | jq -r .reply
+```
+
 ## Quick Start (Manual Mode)
 
 > **You:** "Plan my week. Here are my meetings: [paste]. My priorities: ship the API migration, prep the Q3 review deck, gym 3x. I have roughly 6 focused hours/day."
