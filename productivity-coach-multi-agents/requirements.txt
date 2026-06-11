@@ -1,0 +1,3 @@
+anthropic>=0.92.0
+# Optional — only needed for MongoDB storage (--enable-storage + MONGODB_URI):
+# pymongo>=4.6
